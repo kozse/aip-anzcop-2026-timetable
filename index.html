@@ -337,6 +337,31 @@ h2 { margin: 0; font-size: clamp(1.45rem, 3vw, 1.88rem); line-height: 1.22; lett
 .modal-header h2 { font-size: 1.18rem; }
 .modal-content { padding: 0 14px 14px; }
 .modal-content > .details { border-top: 0; padding: 10px 0 0; }
+#open-guided-agenda { margin: 0; min-height: 43px; }
+.guided-dialog[open] { display: flex; flex-direction: column; max-height: min(90dvh, 860px); }
+.guided-dialog .modal-header { position: static; }
+.guided-dialog #guided-step { font-size: 1.1rem; margin: 4px 0 0; }
+.guided-dialog #guided-progress { margin: 5px 0 0; }
+.guided-choices { overflow: auto; min-height: 0; padding: 0 14px 14px; }
+.guided-instruction { color: var(--quiet); margin: 12px 0; font-size: .875rem; }
+.guided-session { margin-top: 8px; padding: 10px; }
+.guided-session-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 6px 12px; flex-wrap: wrap; }
+.guided-session-head p { margin: 3px 0 6px; color: var(--quiet); font-size: .875rem; }
+.guided-pick { display: flex; align-items: flex-start; gap: 8px; padding: 5px 0; cursor: pointer; font-size: .875rem; }
+.guided-pick input { margin: .2em 0 0; flex: none; width: 1em; height: 1em; accent-color: var(--action); }
+.guided-pick:has(input:disabled) { cursor: default; }
+.guided-pick small { display: block; color: var(--quiet); font-size: .8125rem; }
+.guided-talk-list { border-top: 1px solid var(--line); margin-top: 4px; padding-top: 4px; }
+.guided-talk-list summary, .guided-abstract summary { color: var(--accent-strong); cursor: pointer; font-size: .875rem; padding: 4px 0; }
+.guided-talk-list ul { list-style: none; padding: 0; margin: 4px 0 0; }
+.guided-talk-list li { border-top: 1px solid var(--line); padding: 3px 0; }
+.guided-abstract { margin-inline-start: calc(1em + 8px); }
+.guided-actions, .guided-next-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; }
+.guided-actions { justify-content: space-between; border-top: 1px solid var(--line); padding: 10px 14px; }
+.guided-next-actions { justify-content: flex-end; }
+.guided-actions p { color: var(--quiet); font-size: .8125rem; margin: 0; }
+.guided-actions button { margin: 0; }
+.guided-actions button:disabled { opacity: .5; cursor: default; }
 .directory-search { max-width: 485px; margin: 13px 0; }
 .directory-note { font-size: .875rem; color: var(--quiet); margin: 5px 0 12px; }
 .affiliation { border: 1px solid var(--line); border-radius: 8px; background: var(--paper); margin-bottom: 6px; padding: 0 12px; }
@@ -815,6 +840,7 @@ h2 { margin: 0; font-size: clamp(1.45rem, 3vw, 1.88rem); line-height: 1.22; lett
       </div>
     </div>
     <div class="agenda-tools" id="agenda-tools">
+      <button class="action" id="open-guided-agenda" type="button">Guided agenda</button>
       <div class="segmented" role="group" aria-label="Agenda view">
         <button type="button" data-agenda-view="day" aria-pressed="true">Day view</button>
         <button type="button" data-agenda-view="week" aria-pressed="false">Week view</button>
@@ -948,6 +974,27 @@ h2 { margin: 0; font-size: clamp(1.45rem, 3vw, 1.88rem); line-height: 1.22; lett
     <button type="button" class="link-button" id="reset-appearance">Reset display settings</button>
   </div>
 </dialog>
+  <dialog id="guided-agenda-dialog" class="modal guided-dialog" aria-labelledby="guided-title">
+    <div class="modal-header">
+      <div>
+        <h2 id="guided-title">Guided agenda</h2>
+        <h3 id="guided-step" tabindex="-1"></h3>
+        <p id="guided-progress"></p>
+      </div>
+      <form method="dialog"><button type="submit" class="close-detail">Close</button></form>
+    </div>
+    <div id="guided-choices" class="guided-choices"></div>
+    <div class="guided-actions">
+      <button id="guided-back" type="button" class="close-detail" disabled>Back</button>
+      <div id="guided-next-actions" class="guided-next-actions">
+        <p id="guided-selected" role="status"></p>
+        <button id="guided-skip-slot" type="button" class="close-detail">Skip slot</button>
+        <button id="guided-skip-day" type="button" class="close-detail" title="Skip the rest of this day">Skip day</button>
+        <button id="guided-save" type="button" class="action" disabled>Save and continue</button>
+      </div>
+      <form id="guided-finish" method="dialog" hidden><button type="submit" class="action">View agenda</button></form>
+    </div>
+  </dialog>
   <dialog id="item-dialog" class="modal" aria-labelledby="dialog-title">
     <div class="modal-header">
       <div><p id="dialog-time"></p><h2 id="dialog-title"></h2></div>
@@ -2160,6 +2207,119 @@ function persistAgenda(message) {
   get('saved-count').textContent = String(state.saved.size);
 }
 
+let guidedAgenda;
+const guidedDialog = get('guided-agenda-dialog');
+const guidedChoices = get('guided-choices');
+
+function collectGuidedSlots() {
+  const slots = new Map();
+  for (const session of program) {
+    const { day, start, end } = localTiming(session);
+    const key = day * minutesPerDay + start;
+    if (!slots.has(key)) slots.set(key, { day, start, sessions: [] });
+    slots.get(key).sessions.push({ session, end });
+  }
+  return [...slots.entries()].sort(([a], [b]) => a - b).map(([, slot]) => slot);
+}
+
+function guidedPick(item, title, subtitle = '') {
+  const saved = state.saved.has(item.id);
+  return '<label class="guided-pick"><input type="checkbox" data-guided-pick value="' + item.id +
+    '"' + (saved ? ' checked disabled' : '') + '><span><strong>' + escapeHTML(title) + '</strong>' +
+    (subtitle ? '<small>' + escapeHTML(subtitle) + '</small>' : '') +
+    (saved ? '<small>Already in agenda</small>' : '') + '</span></label>';
+}
+
+function renderGuidedSession({ session, end }, slot) {
+  const time = range(slot.start, end);
+  const meta = [time, session.venue].filter(Boolean).join(' · ');
+  const kind = session.talks.length || ['session', 'plenary', 'poster'].includes(session.category) ? 'session' : 'event';
+  const optionsId = 'guided-options-' + session.id;
+  return '<article class="card guided-session" data-tone="' + session.tone + '">' +
+    '<div class="guided-session-head"><div>' + sessionTag(session) +
+    '<h4>' + escapeHTML(session.shortTitle) + '</h4><p>' + escapeHTML(meta) + '</p></div>' +
+    '<button type="button" class="link-button" data-guided-skip="' + kind + '" aria-controls="' + optionsId +
+    '">Skip ' + kind + '</button></div>' +
+    '<div id="' + optionsId + '">' + guidedPick(session, 'Add ' + (kind === 'session' ? 'whole session' : 'event')) +
+    (session.talks.length ? '<details class="guided-talk-list"><summary>Choose individual talks · ' +
+      session.talks.length + '</summary><ul>' + session.talks.map((talk) => {
+        const timing = localTiming(talk);
+        const when = session.category === 'poster' ? 'Poster session' :
+          (timing.day !== slot.day ? dateText(timing.day) + ' · ' : '') + range(timing.start, timing.end);
+        return '<li>' + guidedPick(talk, talk.title, when + ' · ' + speakerText(talk)) +
+          '<details class="guided-abstract" data-guided-talk="' + talk.id +
+          '"><summary>Abstract and affiliations</summary></details></li>';
+      }).join('') + '</ul></details>' : '') + '</div></article>';
+}
+
+function guidedSelections() {
+  return [...guidedChoices.querySelectorAll('[data-guided-pick]:checked:enabled')];
+}
+
+function updateGuidedSelection() {
+  const count = guidedSelections().length;
+  get('guided-selected').textContent = countLabel(count, 'new selection');
+  get('guided-save').disabled = !count;
+}
+
+function renderGuidedAgenda() {
+  const { slots, index, history, added } = guidedAgenda;
+  const slot = slots[index];
+  get('guided-back').disabled = !history.length;
+  get('guided-next-actions').hidden = !slot;
+  get('guided-finish').hidden = !!slot;
+  get('guided-progress').textContent = slot ?
+    'Slot ' + (index + 1) + ' of ' + slots.length + ' · ' + zoneLabel(activeTimeZone()) : '';
+  get('guided-step').textContent = slot ? dateText(slot.day) + ' · ' + clock(slot.start) : 'Guided agenda complete';
+  guidedChoices.innerHTML = slot ? '<p class="guided-instruction">Select sessions or talks, then save to move on. ' +
+    'Skip controls leave previously saved items in your agenda.</p>' +
+    slot.sessions.map((entry) => renderGuidedSession(entry, slot)).join('') :
+    '<p>' + countLabel(added, 'item') + ' added during this run.</p>';
+  updateGuidedSelection();
+  guidedChoices.scrollTop = 0;
+  if (guidedDialog.open) get('guided-step').focus();
+}
+
+function openGuidedAgenda() {
+  const zone = preferences.timeZone;
+  if (!guidedAgenda || guidedAgenda.zone !== zone || guidedAgenda.index === guidedAgenda.slots.length) {
+    guidedAgenda = { zone, slots: collectGuidedSlots(), index: 0, history: [], added: 0 };
+  }
+  renderGuidedAgenda();
+  guidedDialog.showModal();
+  get('guided-step').focus();
+}
+
+function advanceGuidedAgenda(destination) {
+  const { slots, index, history } = guidedAgenda;
+  if (index >= slots.length) return;
+  history.push(index);
+  guidedAgenda.index = destination < 0 ? slots.length : destination;
+  renderGuidedAgenda();
+}
+
+function saveGuidedSlot() {
+  const selected = guidedSelections().map((choice) => choice.value).filter((id) => !state.saved.has(id));
+  for (const id of selected) state.saved.add(id);
+  if (selected.length) {
+    guidedAgenda.added += selected.length;
+    persistAgenda(countLabel(selected.length, 'item') + ' added to agenda');
+  }
+  advanceGuidedAgenda(guidedAgenda.index + 1);
+}
+
+function toggleGuidedSession(button) {
+  const options = get(button.getAttribute('aria-controls'));
+  options.hidden = !options.hidden;
+  if (options.hidden) {
+    for (const input of options.querySelectorAll('[data-guided-pick]:enabled')) input.checked = false;
+  }
+  const kind = button.dataset.guidedSkip;
+  button.textContent = options.hidden ? 'Review skipped ' + kind : 'Skip ' + kind;
+  updateGuidedSelection();
+}
+
+
 function clearAgenda() {
   if (!state.saved.size) return;
   state.clearedAgenda = [...state.saved];
@@ -2479,6 +2639,32 @@ get('participant-clear').addEventListener('click', () => {
 });
 get('export').addEventListener('click', exportCalendar);
 get('export-pdf').addEventListener('click', exportAgendaPDF);
+get('open-guided-agenda').addEventListener('click', openGuidedAgenda);
+get('guided-save').addEventListener('click', saveGuidedSlot);
+get('guided-skip-slot').addEventListener('click', () => advanceGuidedAgenda(guidedAgenda.index + 1));
+get('guided-skip-day').addEventListener('click', () => {
+  const { slots, index } = guidedAgenda;
+  advanceGuidedAgenda(slots.findIndex((slot) => slot.day > slots[index].day));
+});
+get('guided-back').addEventListener('click', () => {
+  const { history } = guidedAgenda;
+  if (!history.length) return;
+  guidedAgenda.index = history.pop();
+  renderGuidedAgenda();
+});
+guidedChoices.addEventListener('change', updateGuidedSelection);
+guidedChoices.addEventListener('click', (event) => {
+  const button = event.target.closest('[data-guided-skip]');
+  if (button) toggleGuidedSession(button);
+});
+guidedChoices.addEventListener('toggle', (event) => {
+  const details = event.target;
+  const talkId = details.dataset.guidedTalk;
+  if (talkId && details.open && details.childElementCount === 1) {
+    details.insertAdjacentHTML('beforeend', talkDetails(items.get(talkId), false));
+  }
+}, true);
+guidedDialog.addEventListener('close', () => renderAgenda());
 get('clear-agenda').addEventListener('click', clearAgenda);
 get('undo-clear-agenda').addEventListener('click', undoClearAgenda);
 get('dismiss-clear-agenda').addEventListener('click', dismissClearAgenda);
